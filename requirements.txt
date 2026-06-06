@@ -1,2 +1,5 @@
+# TKA Made Easy — Python Dependencies
 fastapi
-uvicorn
+uvicorn[standard]
+psycopg2-binary
+python-dotenv

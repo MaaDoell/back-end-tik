@@ -2,24 +2,29 @@
 =============================================================
   TKA Made Easy — UTBK Tryout Backend
   Framework : FastAPI
-  Database  : SQLite (via sqlite3 bawaan Python)
+  Database  : PostgreSQL (Supabase)
 =============================================================
 """
 
-import sqlite3
 import os
-from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# Konfigurasi
+# Load environment variables dari file .env
 # ---------------------------------------------------------------------------
 
-DB_PATH = "tka_made_easy.db"   # File database SQLite (dibuat otomatis)
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL tidak ditemukan. Pastikan file .env sudah dibuat.")
 
 # ---------------------------------------------------------------------------
 # Inisialisasi Aplikasi FastAPI
@@ -27,11 +32,11 @@ DB_PATH = "tka_made_easy.db"   # File database SQLite (dibuat otomatis)
 
 app = FastAPI(
     title="TKA Made Easy — UTBK Tryout API",
-    description="Backend API untuk menyimpan dan mengambil skor tryout UTBK",
-    version="1.0.0",
+    description="Backend API untuk menyimpan/mengambil skor dan soal tryout UTBK",
+    version="2.0.0",
 )
 
-# CORS — izinkan semua origin agar frontend bisa connect (sesuaikan di production)
+# CORS — izinkan semua origin (sesuaikan di production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,40 +49,42 @@ app.add_middleware(
 # Database Helpers
 # ---------------------------------------------------------------------------
 
-def get_connection() -> sqlite3.Connection:
-    """Membuka koneksi ke database SQLite."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row   # hasil query bisa diakses seperti dict
+def get_connection():
+    """Membuka koneksi ke PostgreSQL (Supabase)."""
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 
 def init_db() -> None:
     """
-    Membuat tabel 'User_Score' jika belum ada.
+    Membuat tabel 'User_Score' di Supabase jika belum ada.
     Dipanggil sekali saat server pertama kali menyala.
     """
     conn = get_connection()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS User_Score (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                nama_user   TEXT    NOT NULL,
-                mata_pel    TEXT    NOT NULL,
-                skor        REAL    NOT NULL CHECK(skor >= 0 AND skor <= 100),
-                tanggal     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
-            )
-        """)
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS "User_Score" (
+                    id          SERIAL PRIMARY KEY,
+                    nama_user   TEXT   NOT NULL,
+                    mata_pel    TEXT   NOT NULL,
+                    skor        FLOAT  NOT NULL CHECK(skor >= 0 AND skor <= 100),
+                    tanggal     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
         conn.commit()
-        print(f"[DB] Database siap → {os.path.abspath(DB_PATH)}")
+        print("[DB] Koneksi ke Supabase berhasil ✅")
+    except Exception as e:
+        print(f"[DB] Gagal inisialisasi: {e}")
     finally:
         conn.close()
 
 
-# Inisialisasi database saat aplikasi pertama kali dimuat
+# Inisialisasi tabel saat server pertama menyala
 init_db()
 
 # ---------------------------------------------------------------------------
-# Pydantic Models (validasi data request & response)
+# Pydantic Models
 # ---------------------------------------------------------------------------
 
 MATA_PELAJARAN_VALID = [
@@ -93,101 +100,70 @@ MATA_PELAJARAN_VALID = [
 
 
 class SkorRequest(BaseModel):
-    """Body request untuk mengirim skor baru."""
-    nama_user: str = Field(
-        ...,
-        min_length=2,
-        max_length=100,
-        description="Nama lengkap peserta tryout",
-        examples=["Budi Santoso"],
-    )
-    mata_pel: str = Field(
-        ...,
-        description="Mata pelajaran yang diujikan",
-        examples=["Matematika"],
-    )
-    skor: float = Field(
-        ...,
-        ge=0,
-        le=100,
-        description="Nilai tryout (0 – 100)",
-        examples=[87.5],
-    )
+    nama_user: str = Field(..., min_length=2, max_length=100, examples=["Budi Santoso"])
+    mata_pel:  str = Field(..., examples=["Matematika"])
+    skor:      float = Field(..., ge=0, le=100, examples=[87.5])
 
 
 class SkorResponse(BaseModel):
-    """Struktur data satu baris skor untuk response GET."""
-    id: int
+    id:        int
     nama_user: str
-    mata_pel: str
-    skor: float
-    tanggal: str
+    mata_pel:  str
+    skor:      float
+    tanggal:   str
 
 
 class PostResponse(BaseModel):
-    """Response setelah skor berhasil disimpan."""
     pesan: str
-    data: SkorResponse
+    data:  SkorResponse
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Routes — Info
 # ---------------------------------------------------------------------------
 
 @app.get("/", tags=["Info"])
 def root():
-    """
-    Endpoint dasar — cek apakah server berjalan.
-    """
     return {
         "nama_aplikasi": "TKA Made Easy",
-        "status": "Server berjalan ✅",
-        "docs": "/docs",
+        "database":      "Supabase PostgreSQL",
+        "status":        "Server berjalan ✅",
+        "docs":          "/docs",
     }
 
 
-# ── POST /scores ──────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Routes — Scores (User_Score)
+# ---------------------------------------------------------------------------
+
+# ── POST /scores ─────────────────────────────────────────────────────────────
 
 @app.post("/scores", response_model=PostResponse, status_code=201, tags=["Scores"])
 def tambah_skor(payload: SkorRequest):
-    """
-    **Kirim skor baru ke database.**
-
-    - `nama_user`: nama peserta (min 2 karakter)
-    - `mata_pel` : nama mata pelajaran
-    - `skor`     : nilai antara 0 – 100
-    """
-    # Validasi mata pelajaran (opsional — hapus blok ini jika ingin bebas)
+    """Kirim skor baru ke database."""
     if payload.mata_pel not in MATA_PELAJARAN_VALID:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Mata pelajaran '{payload.mata_pel}' tidak dikenal. "
-                f"Pilihan yang tersedia: {MATA_PELAJARAN_VALID}"
+                f"Pilihan: {MATA_PELAJARAN_VALID}"
             ),
         )
 
     conn = get_connection()
     try:
-        cursor = conn.execute(
-            """
-            INSERT INTO User_Score (nama_user, mata_pel, skor)
-            VALUES (?, ?, ?)
-            """,
-            (payload.nama_user.strip(), payload.mata_pel, payload.skor),
-        )
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO "User_Score" (nama_user, mata_pel, skor)
+                VALUES (%s, %s, %s)
+                RETURNING id, nama_user, mata_pel, skor, tanggal::TEXT
+                """,
+                (payload.nama_user.strip(), payload.mata_pel, payload.skor),
+            )
+            row = cur.fetchone()
         conn.commit()
-        new_id = cursor.lastrowid
-
-        # Ambil baris yang baru saja disimpan untuk dikembalikan ke client
-        row = conn.execute(
-            "SELECT * FROM User_Score WHERE id = ?", (new_id,)
-        ).fetchone()
-
-        return PostResponse(
-            pesan="Skor berhasil disimpan! 🎉",
-            data=SkorResponse(**dict(row)),
-        )
+        return PostResponse(pesan="Skor berhasil disimpan! 🎉", data=SkorResponse(**row))
     except Exception as exc:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Gagal menyimpan skor: {exc}")
@@ -195,7 +171,7 @@ def tambah_skor(payload: SkorRequest):
         conn.close()
 
 
-# ── GET /scores ───────────────────────────────────────────────────────────
+# ── GET /scores ───────────────────────────────────────────────────────────────
 
 @app.get("/scores", response_model=list[SkorResponse], tags=["Scores"])
 def ambil_semua_skor(
@@ -203,81 +179,65 @@ def ambil_semua_skor(
     mata_pel:  Optional[str] = None,
 ):
     """
-    **Ambil semua skor dari database.**
-
-    Query params opsional untuk filter:
-    - `nama_user`: filter berdasarkan nama (pencarian parsial, tidak case-sensitive)
-    - `mata_pel` : filter berdasarkan mata pelajaran
-    
-    Contoh:
-    - `/scores` → semua skor
-    - `/scores?nama_user=budi` → skor milik user bernama "budi" (atau mengandung kata itu)
-    - `/scores?mata_pel=Matematika` → semua skor Matematika
+    Ambil semua skor. Filter opsional:
+    - `?nama_user=budi` → cari nama mengandung kata 'budi'
+    - `?mata_pel=Fisika` → cuma skor Fisika
     """
     conn = get_connection()
     try:
-        query  = "SELECT * FROM User_Score WHERE 1=1"
-        params = []
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            query  = """SELECT id, nama_user, mata_pel, skor, tanggal::TEXT
+                        FROM "User_Score" WHERE 1=1"""
+            params = []
 
-        if nama_user:
-            query  += " AND LOWER(nama_user) LIKE ?"
-            params.append(f"%{nama_user.lower()}%")
+            if nama_user:
+                query += " AND LOWER(nama_user) LIKE %s"
+                params.append(f"%{nama_user.lower()}%")
+            if mata_pel:
+                query += " AND mata_pel = %s"
+                params.append(mata_pel)
 
-        if mata_pel:
-            query  += " AND mata_pel = ?"
-            params.append(mata_pel)
-
-        query += " ORDER BY tanggal DESC"
-
-        rows = conn.execute(query, params).fetchall()
-        return [SkorResponse(**dict(r)) for r in rows]
+            query += " ORDER BY tanggal DESC"
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        return [SkorResponse(**r) for r in rows]
     finally:
         conn.close()
 
 
-# ── GET /scores/{id} ──────────────────────────────────────────────────────
+# ── GET /scores/{id} ──────────────────────────────────────────────────────────
 
 @app.get("/scores/{score_id}", response_model=SkorResponse, tags=["Scores"])
 def ambil_skor_by_id(score_id: int):
-    """
-    **Ambil satu skor berdasarkan ID.**
-    """
+    """Ambil satu skor berdasarkan ID."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM User_Score WHERE id = ?", (score_id,)
-        ).fetchone()
-
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Skor dengan ID {score_id} tidak ditemukan."
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, nama_user, mata_pel, skor, tanggal::TEXT
+                   FROM "User_Score" WHERE id = %s""",
+                (score_id,),
             )
-        return SkorResponse(**dict(row))
+            row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Skor ID {score_id} tidak ditemukan.")
+        return SkorResponse(**row)
     finally:
         conn.close()
 
 
-# ── DELETE /scores/{id} ───────────────────────────────────────────────────
+# ── DELETE /scores/{id} ───────────────────────────────────────────────────────
 
 @app.delete("/scores/{score_id}", tags=["Scores"])
 def hapus_skor(score_id: int):
-    """
-    **Hapus satu skor berdasarkan ID.**
-    """
+    """Hapus satu skor berdasarkan ID."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT id FROM User_Score WHERE id = ?", (score_id,)
-        ).fetchone()
-
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Skor dengan ID {score_id} tidak ditemukan."
-            )
-
-        conn.execute("DELETE FROM User_Score WHERE id = ?", (score_id,))
+        with conn.cursor() as cur:
+            cur.execute('SELECT id FROM "User_Score" WHERE id = %s', (score_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail=f"Skor ID {score_id} tidak ditemukan.")
+            cur.execute('DELETE FROM "User_Score" WHERE id = %s', (score_id,))
         conn.commit()
         return {"pesan": f"Skor ID {score_id} berhasil dihapus."}
     except HTTPException:
@@ -290,7 +250,88 @@ def hapus_skor(score_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Entry point (jalankan langsung dengan `python main.py`)
+# Routes — Soal (tabel "MAPEL MATA PELIA" milik teman)
+# ---------------------------------------------------------------------------
+
+# ── GET /soal ─────────────────────────────────────────────────────────────────
+
+@app.get("/soal", tags=["Soal"])
+def ambil_soal(
+    mata_pelajaran: Optional[str] = None,
+    limit:          Optional[int] = None,
+):
+    """
+    Ambil soal dari tabel **MAPEL MATA PELIA**.
+
+    Filter opsional:
+    - `?mata_pelajaran=Biologi` → hanya soal Biologi
+    - `?limit=10`               → maksimal 10 soal
+
+    Contoh:
+    - `/soal`                              → semua soal
+    - `/soal?mata_pelajaran=Fisika`        → soal Fisika saja
+    - `/soal?mata_pelajaran=Kimia&limit=5` → 5 soal Kimia
+    
+    ⚠️  Nama kolom di bawah (mata_pelajaran, soal, dst) harus disesuaikan
+        dengan nama kolom yang sebenarnya di tabel teman kamu di Supabase.
+        Cek dulu di Supabase → Table Editor → MAPEL MATA PELIA.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+
+            # PERHATIAN: Sesuaikan nama kolom di bawah dengan kolom asli di tabel kamu
+            # Kolom yang sering dipakai: id, mata_pelajaran, soal, opsi_a, opsi_b,
+            #                            opsi_c, opsi_d, opsi_e, jawaban_benar
+            query  = 'SELECT * FROM "MAPEL MATA PELIA" WHERE 1=1'
+            params = []
+
+            if mata_pelajaran:
+                # Ganti 'mata_pelajaran' dengan nama kolom mapel yang sebenarnya
+                query += " AND mata_pelajaran = %s"
+                params.append(mata_pelajaran)
+
+            query += " ORDER BY id"
+
+            if limit and limit > 0:
+                query += " LIMIT %s"
+                params.append(limit)
+
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+        # Kembalikan sebagai list of dict agar fleksibel dengan kolom apapun
+        return {"total": len(rows), "soal": [dict(r) for r in rows]}
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
+    finally:
+        conn.close()
+
+
+# ── GET /soal/{id} ────────────────────────────────────────────────────────────
+
+@app.get("/soal/{soal_id}", tags=["Soal"])
+def ambil_soal_by_id(soal_id: int):
+    """Ambil satu soal berdasarkan ID."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute('SELECT * FROM "MAPEL MATA PELIA" WHERE id = %s', (soal_id,))
+            row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Soal ID {soal_id} tidak ditemukan.")
+        return dict(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
