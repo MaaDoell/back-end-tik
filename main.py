@@ -12,6 +12,7 @@ import json
 import urllib.request
 from urllib.parse import urlparse
 from typing import Optional
+import random
 
 import pg8000
 from dotenv import load_dotenv
@@ -136,6 +137,30 @@ def row_to_dict(cursor) -> dict | None:
         return None
     cols = [desc[0] for desc in cursor.description]
     return dict(zip(cols, row))
+
+
+def shuffle_soal_options(soal: dict) -> dict:
+    """
+    Acak posisi opsi A-E per soal, lalu update kunci_jawaban ke huruf posisi baru.
+    Kolom yang diacak: opsi_a, opsi_b, opsi_c, opsi_d, opsi_e
+    """
+    huruf     = ['a', 'b', 'c', 'd', 'e']
+    opsi_keys = ['opsi_a', 'opsi_b', 'opsi_c', 'opsi_d', 'opsi_e']
+
+    opsi_values  = [soal.get(k, '') for k in opsi_keys]
+    kunci_asli   = (soal.get('kunci_jawaban') or '').strip().lower()
+    kunci_idx    = huruf.index(kunci_asli) if kunci_asli in huruf else 0
+    jawaban_benar = opsi_values[kunci_idx]
+
+    random.shuffle(opsi_values)
+
+    new_idx = opsi_values.index(jawaban_benar)
+
+    result = dict(soal)
+    for i, key in enumerate(opsi_keys):
+        result[key] = opsi_values[i]
+    result['kunci_jawaban'] = huruf[new_idx]
+    return result
 
 
 def init_db() -> None:
@@ -338,24 +363,27 @@ def hapus_skor(score_id: int):
 
 @app.get("/soal", tags=["Soal"])
 def ambil_soal(
-    mapel: Optional[str] = None,
+    mata_pelajaran: Optional[str] = None,
     limit: Optional[int] = None,
 ):
     """
     Ambil soal dari tabel MAPEL MATA PELIA.
-    - `?mapel=Biologi`      → soal Biologi saja
-    - `?mapel=Matematika+TL` → soal Matematika TL saja
-    - `?limit=10`           → maksimal 10 soal
-    - Tanpa parameter       → semua soal
+    - Opsi jawaban diacak per soal via random.shuffle()
+    - kunci_jawaban diperbarui ke posisi huruf baru setelah shuffle
+    - `?mata_pelajaran=Fisika` → soal Fisika saja
+    - `?limit=10`              → maksimal 10 soal
     """
     conn = get_connection()
     try:
         cur    = conn.cursor()
-        query  = 'SELECT * FROM "MAPEL MATA PELIA" WHERE 1=1'
+        query  = (
+            'SELECT id, pertanyaan, opsi_a, opsi_b, opsi_c, opsi_d, opsi_e, kunci_jawaban '
+            'FROM "MAPEL MATA PELIA" WHERE 1=1'
+        )
         params = []
-        if mapel:
+        if mata_pelajaran:
             query += " AND mata_pelajaran = %s"
-            params.append(mapel)
+            params.append(mata_pelajaran)
         query += " ORDER BY id"
         if limit and limit > 0:
             query += " LIMIT %s"
@@ -363,7 +391,9 @@ def ambil_soal(
         cur.execute(query, params)
         rows = rows_to_dicts(cur)
         cur.close()
-        return {"total": len(rows), "soal": rows}
+
+        shuffled = [shuffle_soal_options(row) for row in rows]
+        return {"total": len(shuffled), "soal": shuffled}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
     finally:
@@ -386,6 +416,67 @@ def ambil_soal_by_id(soal_id: int):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Routes — Materi (tabel "materi")
+# ---------------------------------------------------------------------------
+
+@app.get("/materi", tags=["Materi"])
+def get_materi(mata_pelajaran: str):
+    """
+    Ambil materi dari Supabase (tabel: materi, kolom: id, mata_pelajaran, judul, konten),
+    lalu kirim ke Groq untuk diformat ulang menjadi HTML estetik siap render.
+    """
+    if mata_pelajaran not in MATA_PELAJARAN_VALID:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Mata pelajaran tidak valid: '{mata_pelajaran}'. Pilihan: {MATA_PELAJARAN_VALID}"
+        )
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT judul, konten FROM materi WHERE mata_pelajaran = %s ORDER BY id',
+            (mata_pelajaran,)
+        )
+        rows = rows_to_dicts(cur)
+        cur.close()
+
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Materi untuk '{mata_pelajaran}' belum tersedia di database."
+            )
+
+        # Gabung semua bab menjadi satu teks mentah
+        raw_text = "\n\n".join(
+            f"### {r.get('judul', 'Materi')}\n{r.get('konten', '')}"
+            for r in rows
+        )
+
+        system_prompt = (
+            "Kamu adalah desainer konten pendidikan untuk siswa SMA Indonesia. "
+            "Tugasmu adalah mengubah materi pelajaran mentah menjadi HTML yang estetik, rapi, dan mudah dicerna. "
+            "Gunakan tag HTML: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <em>, <blockquote>. "
+            "Tambahkan inline style CSS untuk warna (teal/biru muda/krem), padding, border-radius, dan spacing agar menarik secara visual. "
+            "Bahasa: santai tapi akurat, seperti guru muda yang asik. "
+            "WAJIB: Kembalikan HANYA kode HTML murni — tanpa markdown, tanpa ```html, langsung mulai dari tag HTML pertama."
+        )
+        user_prompt = (
+            f"Format ulang materi {mata_pelajaran} berikut menjadi HTML estetik:\n\n{raw_text}"
+        )
+
+        html_hasil = call_groq(system_prompt, user_prompt)
+        return {"mata_pelajaran": mata_pelajaran, "html": html_hasil}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gagal memproses materi: {exc}")
     finally:
         conn.close()
 
