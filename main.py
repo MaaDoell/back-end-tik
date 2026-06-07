@@ -60,14 +60,18 @@ def call_groq(system_prompt: str, user_prompt: str, model: str = "llama3-70b-819
         headers = {
             "Content-Type":  "application/json",
             "Authorization": f"Bearer {GROQ_API_KEY}",
+            "User-Agent":    "TKA-Made-Easy/1.0",
         },
         method  = "POST",
     )
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-
-    return result["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise HTTPException(status_code=500, detail=f"Groq HTTP {e.code}: {error_body}")
 
 # ---------------------------------------------------------------------------
 # Inisialisasi Aplikasi FastAPI
@@ -514,14 +518,17 @@ class ChatRequest(BaseModel):
 @app.get("/ai/test", tags=["AI"])
 def ai_test():
     """Endpoint diagnosa — cek GROQ_API_KEY dan koneksi Groq."""
-    key = os.environ.get("GROQ_API_KEY")
+    key = os.environ.get("GROQ_API_KEY", "")
     if not key:
         return {"status": "❌ GROQ_API_KEY tidak ditemukan di environment variables."}
+    key_preview = f"{key[:8]}...{key[-4:]}"
     try:
-        hasil = call_groq("Jawab hanya dengan kata 'OK'.", "test", model="llama3-8b-8192")
-        return {"status": "✅ Groq terhubung", "response": hasil}
+        hasil = call_groq("Jawab hanya dengan kata OK.", "test", model="llama3-8b-8192")
+        return {"status": "✅ Groq terhubung", "key_terbaca": key_preview, "response": hasil}
+    except HTTPException as e:
+        return {"status": "❌ Groq error", "key_terbaca": key_preview, "detail": e.detail}
     except Exception as e:
-        return {"status": "❌ Groq error", "detail": str(e)}
+        return {"status": "❌ Unknown error", "key_terbaca": key_preview, "detail": str(e)}
 
 
 @app.post("/ai/chat", tags=["AI"])
