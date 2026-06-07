@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from typing import Optional
 
 import pg8000
+from groq import Groq
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL tidak ditemukan. Pastikan file .env sudah dibuat.")
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+# ---------------------------------------------------------------------------
+# Groq Helper
+# ---------------------------------------------------------------------------
+
+def call_groq(system_prompt: str, user_prompt: str, model: str = "llama3-70b-8192") -> str:
+    """Kirim prompt ke Groq dan kembalikan teks responsnya."""
+    if not GROQ_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="GROQ_API_KEY tidak ditemukan. Tambahkan di Vercel Environment Variables."
+        )
+    client = Groq(api_key=GROQ_API_KEY)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        max_tokens=1024,
+        temperature=0.7,
+    )
+    return response.choices[0].message.content
 
 # ---------------------------------------------------------------------------
 # Inisialisasi Aplikasi FastAPI
@@ -135,6 +161,16 @@ class SkorResponse(BaseModel):
 class PostResponse(BaseModel):
     pesan: str
     data:  SkorResponse
+
+
+# Models untuk endpoint AI
+class MateriRequest(BaseModel):
+    mata_pelajaran: str = Field(..., examples=["Fisika"])
+    gaya_belajar:   str = Field(..., examples=["visual"])  # visual / auditori / kinestetik
+
+
+class VariasiSoalRequest(BaseModel):
+    soal_asli: str = Field(..., examples=["Diketahui f(x) = 3x² + 2x - 5. Tentukan f'(2)!"])
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +342,127 @@ def ambil_soal_by_id(soal_id: int):
         raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Routes — AI (Groq)
+# ---------------------------------------------------------------------------
+
+@app.post("/ai/materi", tags=["AI"])
+def ai_materi(payload: MateriRequest):
+    """
+    Jelaskan materi UTBK disesuaikan dengan gaya belajar user.
+
+    - `mata_pelajaran`: Fisika, Kimia, Matematika, dll.
+    - `gaya_belajar`  : `visual`, `auditori`, atau `kinestetik`
+    """
+    GAYA_VALID = ["visual", "auditori", "kinestetik"]
+    if payload.gaya_belajar.lower() not in GAYA_VALID:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Gaya belajar tidak dikenal. Pilihan: {GAYA_VALID}"
+        )
+
+    system_prompt = (
+        "Kamu adalah guru TKA UTBK yang sabar dan asyik buat anak SMA. "
+        "Jelaskan materi dengan bahasa yang santai, mudah dipahami, dan sesuai gaya belajar yang diminta. "
+        "Gunakan struktur yang jelas: pengertian → konsep utama → contoh soal singkat. "
+        "Tidak perlu terlalu panjang, cukup padat dan mengena."
+    )
+
+    user_prompt = (
+        f"Jelaskan materi {payload.mata_pelajaran} untuk persiapan UTBK TKA. "
+        f"Gaya belajar saya adalah {payload.gaya_belajar}. "
+        f"Sesuaikan cara penjelasannya:\n"
+        f"- Visual: gunakan analogi, diagram teks (ASCII), dan poin-poin terstruktur.\n"
+        f"- Auditori: gunakan penjelasan naratif mengalir seperti guru sedang bercerita.\n"
+        f"- Kinestetik: gunakan langkah-langkah praktikal dan contoh nyata sehari-hari."
+    )
+
+    hasil = call_groq(system_prompt, user_prompt)
+    return {
+        "mata_pelajaran": payload.mata_pelajaran,
+        "gaya_belajar":   payload.gaya_belajar,
+        "materi":         hasil,
+    }
+
+
+@app.post("/ai/variasi-soal", tags=["AI"])
+def ai_variasi_soal(payload: VariasiSoalRequest):
+    """
+    Buat 1 variasi soal baru dari soal asli dengan konteks/angka berbeda,
+    tapi tingkat kesulitan dan konsep yang diuji tetap sama persis.
+    """
+    system_prompt = (
+        "Kamu adalah pembuat soal UTBK TKA yang berpengalaman. "
+        "Tugasmu adalah memodifikasi soal yang diberikan menjadi soal baru yang segar. "
+        "Aturan ketat:\n"
+        "1. Konsep dan rumus yang diuji HARUS sama persis.\n"
+        "2. Ganti angka, nama, atau konteks cerita agar terasa berbeda.\n"
+        "3. Tingkat kesulitan harus setara.\n"
+        "4. Sertakan juga kunci jawaban dan langkah penyelesaiannya.\n"
+        "Format output:\n"
+        "SOAL BARU:\n[isi soal]\n\nPILIHAN JAWABAN:\nA. ...\nB. ...\nC. ...\nD. ...\nE. ...\n\n"
+        "KUNCI: [huruf jawaban]\n\nPEMBAHASAN:\n[langkah penyelesaian]"
+    )
+
+    user_prompt = f"Buat variasi dari soal berikut:\n\n{payload.soal_asli}"
+
+    hasil = call_groq(system_prompt, user_prompt)
+    return {
+        "soal_asli":   payload.soal_asli,
+        "variasi_soal": hasil,
+    }
+
+
+@app.post("/ai/rekomendasi", tags=["AI"])
+def ai_rekomendasi(nilai: dict):
+    """
+    Terima daftar mata pelajaran beserta nilainya, lalu kembalikan evaluasi
+    dan rekomendasi strategi belajar dari 'guru BK' AI.
+
+    Contoh body request:
+    ```json
+    { "Matematika": 40, "Sosiologi": 90, "Fisika": 55, "Kimia": 70 }
+    ```
+    """
+    if not nilai:
+        raise HTTPException(status_code=422, detail="Data nilai tidak boleh kosong.")
+
+    # Susun ringkasan nilai untuk prompt
+    ringkasan = "\n".join(
+        f"- {mapel}: {skor}/100" for mapel, skor in nilai.items()
+    )
+
+    # Kategorikan mapel berdasarkan skor
+    lemah   = [m for m, s in nilai.items() if s < 60]
+    sedang  = [m for m, s in nilai.items() if 60 <= s < 80]
+    kuat    = [m for m, s in nilai.items() if s >= 80]
+
+    system_prompt = (
+        "Kamu adalah guru BK sekaligus konselor belajar yang asik, jujur, dan supportif. "
+        "Gaya bicaramu santai tapi tetap profesional — seperti kakak kelas yang udah berpengalaman UTBK. "
+        "Berikan evaluasi yang jujur (tanpa menghakimi) dan rekomendasi strategi belajar yang konkret dan actionable. "
+        "Jangan hanya teori — kasih contoh teknik belajar spesifik untuk setiap mata pelajaran yang lemah."
+    )
+
+    user_prompt = (
+        f"Ini adalah hasil tryout UTBK TKA saya:\n{ringkasan}\n\n"
+        f"Mata pelajaran yang lemah (< 60): {', '.join(lemah) if lemah else 'tidak ada'}.\n"
+        f"Mata pelajaran yang sedang (60–79): {', '.join(sedang) if sedang else 'tidak ada'}.\n"
+        f"Mata pelajaran yang kuat (≥ 80): {', '.join(kuat) if kuat else 'tidak ada'}.\n\n"
+        f"Tolong berikan:\n"
+        f"1. Evaluasi singkat kenapa nilai tertentu bisa anjlok.\n"
+        f"2. Strategi belajar alternatif yang spesifik untuk tiap mapel lemah.\n"
+        f"3. Prioritas belajar minggu ini berdasarkan data ini.\n"
+        f"4. Motivasi penutup yang tulus dan tidak lebay."
+    )
+
+    hasil = call_groq(system_prompt, user_prompt)
+    return {
+        "ringkasan_nilai": nilai,
+        "rekomendasi":     hasil,
+    }
 
 
 # ---------------------------------------------------------------------------
