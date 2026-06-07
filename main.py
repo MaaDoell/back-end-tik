@@ -43,7 +43,7 @@ GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
 # Groq Helper
 # ---------------------------------------------------------------------------
 
-def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
+def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024) -> str:
     """Kirim prompt ke Groq REST API pakai urllib (pure Python, no library)."""
     if not GROQ_API_KEY:
         raise HTTPException(
@@ -57,7 +57,7 @@ def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ],
-        "max_tokens":  1024,
+        "max_tokens":  max_tokens,
         "temperature": 0.7,
     }).encode("utf-8")
 
@@ -432,7 +432,7 @@ def get_materi(mata_pelajaran: str):
             f"Format ulang materi {mata_pelajaran} berikut menjadi HTML estetik:\n\n{raw_text_dipotong}"
         )
 
-        html_hasil = call_groq(system_prompt, user_prompt, model="llama-3.1-8b-instant")
+        html_hasil = call_groq(system_prompt, user_prompt, model="mixtral-8x7b-32768", max_tokens=800)
         return {"mata_pelajaran": mata_pelajaran, "html": html_hasil}
 
     except HTTPException:
