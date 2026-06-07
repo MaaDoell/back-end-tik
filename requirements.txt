@@ -2,4 +2,3 @@ fastapi
 uvicorn[standard]
 pg8000
 python-dotenv
-groq
