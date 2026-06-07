@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 from typing import Optional
 
 import pg8000
-import google.generativeai as genai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,10 +38,6 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL tidak ditemukan. Pastikan file .env sudah dibuat.")
 
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
 # Groq Helper
@@ -84,25 +79,6 @@ def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         raise HTTPException(status_code=500, detail=f"Groq HTTP {e.code}: {error_body}")
-
-# ---------------------------------------------------------------------------
-# Gemini Helper  (digunakan khusus oleh endpoint /materi)
-# ---------------------------------------------------------------------------
-
-def call_gemini(prompt: str, model: str = "gemini-2.0-flash") -> str:
-    """Kirim prompt ke Gemini API menggunakan google-generativeai SDK."""
-    if not GEMINI_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY tidak ditemukan. Tambahkan di file .env atau Vercel Environment Variables."
-        )
-    try:
-        gemini_model = genai.GenerativeModel(model)
-        response     = gemini_model.generate_content(prompt)
-        return response.text
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Gemini API error: {exc}")
-
 
 # ---------------------------------------------------------------------------
 # Inisialisasi Aplikasi FastAPI
@@ -436,23 +412,27 @@ def get_materi(mata_pelajaran: str):
                 detail=f"Materi untuk '{mata_pelajaran}' belum tersedia di database."
             )
 
-        # Gabung semua bab menjadi satu teks mentah
-        raw_text = "\n\n".join(
+        # Gabung semua bab, lalu potong agar tidak melebihi limit token Groq
+        MAX_CHARS = 8000
+        raw_text  = "\n\n".join(
             f"### {r.get('topic', 'Materi')}\n{r.get('content', '')}"
             for r in rows
         )
+        raw_text_dipotong = raw_text[:MAX_CHARS]
 
-        prompt = (
+        system_prompt = (
             "Kamu adalah desainer konten pendidikan untuk siswa SMA Indonesia. "
             "Tugasmu adalah mengubah materi pelajaran mentah menjadi HTML yang estetik, rapi, dan mudah dicerna. "
             "Gunakan tag HTML: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <em>, <blockquote>. "
             "Tambahkan inline style CSS untuk warna (teal/biru muda/krem), padding, border-radius, dan spacing agar menarik secara visual. "
             "Bahasa: santai tapi akurat, seperti guru muda yang asik. "
-            "WAJIB: Kembalikan HANYA kode HTML murni — tanpa markdown, tanpa ```html, langsung mulai dari tag HTML pertama.\n\n"
-            f"Format ulang materi {mata_pelajaran} berikut menjadi HTML estetik:\n\n{raw_text}"
+            "WAJIB: Kembalikan HANYA kode HTML murni — tanpa markdown, tanpa ```html, langsung mulai dari tag HTML pertama."
+        )
+        user_prompt = (
+            f"Format ulang materi {mata_pelajaran} berikut menjadi HTML estetik:\n\n{raw_text_dipotong}"
         )
 
-        html_hasil = call_gemini(prompt)
+        html_hasil = call_groq(system_prompt, user_prompt, model="llama-3.1-8b-instant")
         return {"mata_pelajaran": mata_pelajaran, "html": html_hasil}
 
     except HTTPException:
