@@ -30,13 +30,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL tidak ditemukan. Pastikan file .env sudah dibuat.")
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 # ---------------------------------------------------------------------------
 # Groq Helper
 # ---------------------------------------------------------------------------
 
-def call_groq(system_prompt: str, user_prompt: str, model: str = "llama3-70b-8192") -> str:
+def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
     """Kirim prompt ke Groq REST API pakai urllib (pure Python, no library)."""
     if not GROQ_API_KEY:
         raise HTTPException(
@@ -523,7 +523,7 @@ def ai_test():
         return {"status": "❌ GROQ_API_KEY tidak ditemukan di environment variables."}
     key_preview = f"{key[:8]}...{key[-4:]}"
     try:
-        hasil = call_groq("Jawab hanya dengan kata OK.", "test", model="llama3-8b-8192")
+        hasil = call_groq("Jawab hanya dengan kata OK.", "test", model="llama-3.1-8b-instant")
         return {"status": "✅ Groq terhubung", "key_terbaca": key_preview, "response": hasil}
     except HTTPException as e:
         return {"status": "❌ Groq error", "key_terbaca": key_preview, "detail": e.detail}
@@ -546,7 +546,7 @@ def ai_chat(payload: ChatRequest):
         "Kalau ada soal, jelaskan step-by-step. Kalau ada pertanyaan konsep, beri analogi yang mudah dipahami. "
         "Jawab singkat dan padat kecuali diminta penjelasan panjang."
     )
-    hasil = call_groq(system_prompt, payload.pesan, model="llama3-8b-8192")
+    hasil = call_groq(system_prompt, payload.pesan, model="llama-3.1-8b-instant")
     return {"balasan": hasil}
 
 
