@@ -483,6 +483,30 @@ def ai_rekomendasi(nilai: dict):
     }
 
 
+@app.post("/ai/chat", tags=["AI"])
+def ai_chat(payload: dict):
+    """
+    General chat endpoint untuk AI Assistant di frontend.
+    Body: { "pesan": "pertanyaan user" }
+    """
+    pesan = payload.get("pesan", "").strip()
+    if not pesan:
+        raise HTTPException(status_code=422, detail="Field 'pesan' tidak boleh kosong.")
+
+    system_prompt = (
+        "Kamu adalah TKA AI Assistant — asisten belajar UTBK yang pintar, asik, dan supportif. "
+        "Kamu membantu siswa SMA mempersiapkan ujian UTBK TKA (Tes Kemampuan Akademik) "
+        "yang mencakup Matematika, Fisika, Kimia, Biologi, Ekonomi, Sosiologi, Geografi, Sejarah, "
+        "Bahasa Indonesia, Bahasa Inggris, dan mata pelajaran TKA lainnya. "
+        "Gaya bicaramu santai, friendly, dan pakai bahasa anak muda Indonesia — tapi tetap akurat. "
+        "Kalau ada soal, jelaskan step-by-step. Kalau ada pertanyaan konsep, beri analogi yang mudah dipahami. "
+        "Jawab singkat dan padat kecuali diminta penjelasan panjang."
+    )
+
+    hasil = call_groq(system_prompt, pesan, model="llama3-8b-8192")
+    return {"balasan": hasil}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
