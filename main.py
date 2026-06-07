@@ -496,6 +496,19 @@ def ai_rekomendasi(nilai: dict):
 class ChatRequest(BaseModel):
     pesan: str = Field(..., min_length=1, examples=["Jelaskan hukum Newton"])
 
+@app.get("/ai/test", tags=["AI"])
+def ai_test():
+    """Endpoint diagnosa — cek GROQ_API_KEY dan koneksi Groq."""
+    key = os.environ.get("GROQ_API_KEY")
+    if not key:
+        return {"status": "❌ GROQ_API_KEY tidak ditemukan di environment variables."}
+    try:
+        hasil = call_groq("Jawab hanya dengan kata 'OK'.", "test", model="llama3-8b-8192")
+        return {"status": "✅ Groq terhubung", "response": hasil}
+    except Exception as e:
+        return {"status": "❌ Groq error", "detail": str(e)}
+
+
 @app.post("/ai/chat", tags=["AI"])
 def ai_chat(payload: ChatRequest):
     """
