@@ -14,8 +14,9 @@ from typing import Optional
 import pg8000
 from groq import Groq
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Pastikan CORS header tetap ada meskipun backend crash 500
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 # ---------------------------------------------------------------------------
 # Database Helpers
@@ -483,16 +493,15 @@ def ai_rekomendasi(nilai: dict):
     }
 
 
+class ChatRequest(BaseModel):
+    pesan: str = Field(..., min_length=1, examples=["Jelaskan hukum Newton"])
+
 @app.post("/ai/chat", tags=["AI"])
-def ai_chat(payload: dict):
+def ai_chat(payload: ChatRequest):
     """
     General chat endpoint untuk AI Assistant di frontend.
     Body: { "pesan": "pertanyaan user" }
     """
-    pesan = payload.get("pesan", "").strip()
-    if not pesan:
-        raise HTTPException(status_code=422, detail="Field 'pesan' tidak boleh kosong.")
-
     system_prompt = (
         "Kamu adalah TKA AI Assistant — asisten belajar UTBK yang pintar, asik, dan supportif. "
         "Kamu membantu siswa SMA mempersiapkan ujian UTBK TKA (Tes Kemampuan Akademik) "
@@ -502,8 +511,7 @@ def ai_chat(payload: dict):
         "Kalau ada soal, jelaskan step-by-step. Kalau ada pertanyaan konsep, beri analogi yang mudah dipahami. "
         "Jawab singkat dan padat kecuali diminta penjelasan panjang."
     )
-
-    hasil = call_groq(system_prompt, pesan, model="llama3-8b-8192")
+    hasil = call_groq(system_prompt, payload.pesan, model="llama3-8b-8192")
     return {"balasan": hasil}
 
 
