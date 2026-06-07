@@ -139,8 +139,24 @@ init_db()
 # ---------------------------------------------------------------------------
 
 MATA_PELAJARAN_VALID = [
-    "Matematika", "Fisika", "Kimia", "Biologi",
-    "Ekonomi", "Sosiologi", "Geografi", "Sejarah",
+    "Bahasa Jepang",
+    "Bahasa Jerman",
+    "Bahasa Indonesia",
+    "Bahasa Inggris",
+    "Biologi",
+    "Ekonomi",
+    "Fisika",
+    "Geografi",
+    "Informatika",
+    "Indonesia TL",
+    "Inggris TL",
+    "Kimia",
+    "KWU",
+    "Matematika TL",
+    "Matematika U",
+    "PKN",
+    "Sejarah",
+    "Sosiologi",
 ]
 
 
