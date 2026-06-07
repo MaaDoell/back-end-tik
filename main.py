@@ -12,7 +12,6 @@ import json
 import urllib.request
 from urllib.parse import urlparse
 from typing import Optional
-import random
 
 import pg8000
 from dotenv import load_dotenv
@@ -20,6 +19,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# Catatan skema tabel "MAPEL MATA PELIA"
+# Kolom: mata_pelajaran (String), topic (String), content (Text)
+# - topic berisi nama Bab materi ATAU string literal 'soal'
+# - content berisi teks materi ATAU teks soal lengkap
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Load environment variables dari file .env
@@ -137,30 +143,6 @@ def row_to_dict(cursor) -> dict | None:
         return None
     cols = [desc[0] for desc in cursor.description]
     return dict(zip(cols, row))
-
-
-def shuffle_soal_options(soal: dict) -> dict:
-    """
-    Acak posisi opsi A-E per soal, lalu update kunci_jawaban ke huruf posisi baru.
-    Kolom yang diacak: opsi_a, opsi_b, opsi_c, opsi_d, opsi_e
-    """
-    huruf     = ['a', 'b', 'c', 'd', 'e']
-    opsi_keys = ['opsi_a', 'opsi_b', 'opsi_c', 'opsi_d', 'opsi_e']
-
-    opsi_values  = [soal.get(k, '') for k in opsi_keys]
-    kunci_asli   = (soal.get('kunci_jawaban') or '').strip().lower()
-    kunci_idx    = huruf.index(kunci_asli) if kunci_asli in huruf else 0
-    jawaban_benar = opsi_values[kunci_idx]
-
-    random.shuffle(opsi_values)
-
-    new_idx = opsi_values.index(jawaban_benar)
-
-    result = dict(soal)
-    for i, key in enumerate(opsi_keys):
-        result[key] = opsi_values[i]
-    result['kunci_jawaban'] = huruf[new_idx]
-    return result
 
 
 def init_db() -> None:
@@ -358,62 +340,36 @@ def hapus_skor(score_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Soal (tabel "MAPEL MATA PELIA")
+# Routes — Soal (tabel "MAPEL MATA PELIA", topic = 'soal')
 # ---------------------------------------------------------------------------
 
 @app.get("/soal", tags=["Soal"])
 def ambil_soal(
     mata_pelajaran: Optional[str] = None,
-    limit: Optional[int] = None,
 ):
     """
-    Ambil soal dari tabel MAPEL MATA PELIA.
-    - Opsi jawaban diacak per soal via random.shuffle()
-    - kunci_jawaban diperbarui ke posisi huruf baru setelah shuffle
+    Ambil soal dari tabel "MAPEL MATA PELIA".
+    - Hanya mengambil baris dengan `topic = 'soal'`
+    - Mengembalikan kolom `content` apa adanya ke frontend
     - `?mata_pelajaran=Fisika` → soal Fisika saja
-    - `?limit=10`              → maksimal 10 soal
     """
     conn = get_connection()
     try:
-        cur    = conn.cursor()
-        query  = (
-            'SELECT id, pertanyaan, opsi_a, opsi_b, opsi_c, opsi_d, opsi_e, kunci_jawaban '
-            'FROM "MAPEL MATA PELIA" WHERE 1=1'
+        cur   = conn.cursor()
+        query = (
+            'SELECT mata_pelajaran, topic, content '
+            'FROM "MAPEL MATA PELIA" WHERE topic = \'soal\''
         )
         params = []
         if mata_pelajaran:
             query += " AND mata_pelajaran = %s"
             params.append(mata_pelajaran)
-        query += " ORDER BY id"
-        if limit and limit > 0:
-            query += " LIMIT %s"
-            params.append(limit)
+        query += " ORDER BY mata_pelajaran"
         cur.execute(query, params)
         rows = rows_to_dicts(cur)
         cur.close()
 
-        shuffled = [shuffle_soal_options(row) for row in rows]
-        return {"total": len(shuffled), "soal": shuffled}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
-    finally:
-        conn.close()
-
-
-@app.get("/soal/{soal_id}", tags=["Soal"])
-def ambil_soal_by_id(soal_id: int):
-    """Ambil satu soal berdasarkan ID."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute('SELECT * FROM "MAPEL MATA PELIA" WHERE id = %s', (soal_id,))
-        row = row_to_dict(cur)
-        cur.close()
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Soal ID {soal_id} tidak ditemukan.")
-        return row
-    except HTTPException:
-        raise
+        return {"total": len(rows), "soal": rows}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Gagal mengambil soal: {exc}")
     finally:
@@ -421,14 +377,16 @@ def ambil_soal_by_id(soal_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Materi (tabel "materi")
+# Routes — Materi (tabel "MAPEL MATA PELIA", topic != 'soal')
 # ---------------------------------------------------------------------------
 
 @app.get("/materi", tags=["Materi"])
 def get_materi(mata_pelajaran: str):
     """
-    Ambil materi dari Supabase (tabel: materi, kolom: id, mata_pelajaran, judul, konten),
-    lalu kirim ke Groq untuk diformat ulang menjadi HTML estetik siap render.
+    Ambil materi dari tabel "MAPEL MATA PELIA".
+    - Hanya mengambil baris yang `mata_pelajaran`-nya cocok dan `topic != 'soal'`
+    - Setiap baris dianggap satu bab; kolom `topic` adalah nama bab, `content` adalah isinya
+    - Seluruh konten digabung lalu dikirim ke Groq untuk diformat jadi HTML estetik
     """
     if mata_pelajaran not in MATA_PELAJARAN_VALID:
         raise HTTPException(
@@ -440,8 +398,10 @@ def get_materi(mata_pelajaran: str):
     try:
         cur = conn.cursor()
         cur.execute(
-            'SELECT judul, konten FROM materi WHERE mata_pelajaran = %s ORDER BY id',
-            (mata_pelajaran,)
+            'SELECT topic, content FROM "MAPEL MATA PELIA" '
+            "WHERE mata_pelajaran = %s AND topic != 'soal' "
+            "ORDER BY topic",
+            (mata_pelajaran,),
         )
         rows = rows_to_dicts(cur)
         cur.close()
@@ -454,7 +414,7 @@ def get_materi(mata_pelajaran: str):
 
         # Gabung semua bab menjadi satu teks mentah
         raw_text = "\n\n".join(
-            f"### {r.get('judul', 'Materi')}\n{r.get('konten', '')}"
+            f"### {r.get('topic', 'Materi')}\n{r.get('content', '')}"
             for r in rows
         )
 
