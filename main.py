@@ -346,24 +346,28 @@ def hapus_skor(score_id: int):
 @app.get("/soal", tags=["Soal"])
 def ambil_soal(
     mata_pelajaran: Optional[str] = None,
+    topic: Optional[str] = None,
 ):
     """
     Ambil soal dari tabel "MAPEL MATA PELIA".
-    - Hanya mengambil baris dengan `topic = 'soal'`
-    - Mengembalikan kolom `content` apa adanya ke frontend
     - `?mata_pelajaran=Fisika` → soal Fisika saja
+    - `?topic=Paket+1`        → filter berdasarkan nama paket soal
+    - Mengembalikan kolom `content` apa adanya ke frontend
     """
     conn = get_connection()
     try:
         cur   = conn.cursor()
         query = (
             'SELECT mata_pelajaran, topic, content '
-            'FROM "MAPEL MATA PELIA" WHERE topic = \'soal\''
+            'FROM "MAPEL MATA PELIA" WHERE 1=1'
         )
         params = []
         if mata_pelajaran:
             query += " AND mata_pelajaran = %s"
             params.append(mata_pelajaran)
+        if topic:
+            query += " AND topic = %s"
+            params.append(topic)
         query += " ORDER BY mata_pelajaran"
         cur.execute(query, params)
         rows = rows_to_dicts(cur)
