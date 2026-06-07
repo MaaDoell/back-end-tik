@@ -310,22 +310,24 @@ def hapus_skor(score_id: int):
 
 @app.get("/soal", tags=["Soal"])
 def ambil_soal(
-    mata_pelajaran: Optional[str] = None,
-    limit:          Optional[int] = None,
+    mapel: Optional[str] = None,
+    limit: Optional[int] = None,
 ):
     """
     Ambil soal dari tabel MAPEL MATA PELIA.
-    - `?mata_pelajaran=Biologi` → soal Biologi saja
-    - `?limit=10`               → maksimal 10 soal
+    - `?mapel=Biologi`      → soal Biologi saja
+    - `?mapel=Matematika+TL` → soal Matematika TL saja
+    - `?limit=10`           → maksimal 10 soal
+    - Tanpa parameter       → semua soal
     """
     conn = get_connection()
     try:
         cur    = conn.cursor()
         query  = 'SELECT * FROM "MAPEL MATA PELIA" WHERE 1=1'
         params = []
-        if mata_pelajaran:
+        if mapel:
             query += " AND mata_pelajaran = %s"
-            params.append(mata_pelajaran)
+            params.append(mapel)
         query += " ORDER BY id"
         if limit and limit > 0:
             query += " LIMIT %s"
