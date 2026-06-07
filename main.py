@@ -8,11 +8,12 @@
 
 import os
 import ssl
+import json
+import urllib.request
 from urllib.parse import urlparse
 from typing import Optional
 
 import pg8000
-from groq import Groq
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,23 +37,37 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # ---------------------------------------------------------------------------
 
 def call_groq(system_prompt: str, user_prompt: str, model: str = "llama3-70b-8192") -> str:
-    """Kirim prompt ke Groq dan kembalikan teks responsnya."""
+    """Kirim prompt ke Groq REST API pakai urllib (pure Python, no library)."""
     if not GROQ_API_KEY:
         raise HTTPException(
             status_code=500,
             detail="GROQ_API_KEY tidak ditemukan. Tambahkan di Vercel Environment Variables."
         )
-    client = Groq(api_key=GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+
+    payload = json.dumps({
+        "model":       model,
+        "messages":    [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ],
-        max_tokens=1024,
-        temperature=0.7,
+        "max_tokens":  1024,
+        "temperature": 0.7,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url     = "https://api.groq.com/openai/v1/chat/completions",
+        data    = payload,
+        headers = {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+        },
+        method  = "POST",
     )
-    return response.choices[0].message.content
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+
+    return result["choices"][0]["message"]["content"]
 
 # ---------------------------------------------------------------------------
 # Inisialisasi Aplikasi FastAPI
