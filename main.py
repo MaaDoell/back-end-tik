@@ -89,7 +89,7 @@ def call_groq(system_prompt: str, user_prompt: str, model: str = "llama-3.3-70b-
 # Gemini Helper  (digunakan khusus oleh endpoint /materi)
 # ---------------------------------------------------------------------------
 
-def call_gemini(prompt: str, model: str = "gemini-1.5-flash") -> str:
+def call_gemini(prompt: str, model: str = "gemini-1.5-flash-latest") -> str:
     """Kirim prompt ke Gemini API menggunakan google-generativeai SDK."""
     if not GEMINI_API_KEY:
         raise HTTPException(
