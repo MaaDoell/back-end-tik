@@ -413,7 +413,7 @@ def get_materi(mata_pelajaran: str):
             )
 
         # Gabung semua bab, lalu potong agar tidak melebihi limit token Groq
-        MAX_CHARS = 8000
+        MAX_CHARS = 3000
         raw_text  = "\n\n".join(
             f"### {r.get('topic', 'Materi')}\n{r.get('content', '')}"
             for r in rows
