@@ -380,13 +380,12 @@ def ambil_soal(
 # Routes — Materi (tabel "MAPEL MATA PELIA", topic != 'soal')
 # ---------------------------------------------------------------------------
 
-@app.get("/materi", tags=["Materi"])
-def get_materi(mata_pelajaran: str):
+@app.get("/materi/daftar-bab", tags=["Materi"])
+def get_daftar_bab(mata_pelajaran: str):
     """
-    Ambil materi dari tabel "MAPEL MATA PELIA".
-    - Hanya mengambil baris yang `mata_pelajaran`-nya cocok dan `topic != 'soal'`
-    - Setiap baris dianggap satu bab; kolom `topic` adalah nama bab, `content` adalah isinya
-    - Seluruh konten digabung lalu dikirim ke Groq untuk diformat jadi HTML estetik
+    Kembalikan daftar nama bab (topic) yang tersedia untuk satu mata pelajaran.
+    Frontend pakai ini untuk mengisi opsi dropdown/pilihan bab.
+    Contoh respons: {"mata_pelajaran": "Fisika", "bab": ["Bab 1", "Bab 2", "Bab 3"]}
     """
     if mata_pelajaran not in MATA_PELAJARAN_VALID:
         raise HTTPException(
@@ -398,27 +397,81 @@ def get_materi(mata_pelajaran: str):
     try:
         cur = conn.cursor()
         cur.execute(
-            'SELECT topic, content FROM "MAPEL MATA PELIA" '
+            'SELECT topic FROM "MAPEL MATA PELIA" '
             "WHERE mata_pelajaran = %s AND topic != 'soal' "
             "ORDER BY topic",
             (mata_pelajaran,),
         )
-        rows = rows_to_dicts(cur)
+        rows = [r[0] for r in cur.fetchall()]
         cur.close()
 
         if not rows:
             raise HTTPException(
                 status_code=404,
-                detail=f"Materi untuk '{mata_pelajaran}' belum tersedia di database."
+                detail=f"Belum ada bab untuk mata pelajaran '{mata_pelajaran}'."
             )
 
-        # Gabung semua bab, lalu potong agar tidak melebihi limit token Groq
-        MAX_CHARS = 3000
-        raw_text  = "\n\n".join(
-            f"### {r.get('topic', 'Materi')}\n{r.get('content', '')}"
-            for r in rows
+        return {"mata_pelajaran": mata_pelajaran, "bab": rows}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil daftar bab: {exc}")
+    finally:
+        conn.close()
+
+
+@app.get("/materi", tags=["Materi"])
+def get_materi(mata_pelajaran: str, topic: Optional[str] = None):
+    """
+    Ambil dan format materi dari tabel "MAPEL MATA PELIA".
+    - Wajib: ?mata_pelajaran=Fisika
+    - Opsional: ?topic=Bab+1  → hanya tampilkan bab tersebut
+    - Tanpa topic             → ambil bab pertama secara default
+    Konten bab dikirim ke Groq untuk diformat jadi HTML estetik.
+    """
+    if mata_pelajaran not in MATA_PELAJARAN_VALID:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Mata pelajaran tidak valid: '{mata_pelajaran}'. Pilihan: {MATA_PELAJARAN_VALID}"
         )
-        raw_text_dipotong = raw_text[:MAX_CHARS]
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        if topic:
+            # Ambil hanya bab yang diminta
+            cur.execute(
+                'SELECT topic, content FROM "MAPEL MATA PELIA" '
+                "WHERE mata_pelajaran = %s AND topic = %s",
+                (mata_pelajaran, topic),
+            )
+        else:
+            # Tidak ada topic → ambil bab pertama (ORDER BY topic LIMIT 1)
+            cur.execute(
+                'SELECT topic, content FROM "MAPEL MATA PELIA" '
+                "WHERE mata_pelajaran = %s AND topic != 'soal' "
+                "ORDER BY topic LIMIT 1",
+                (mata_pelajaran,),
+            )
+
+        rows = rows_to_dicts(cur)
+        cur.close()
+
+        if not rows:
+            detail = (
+                f"Bab '{topic}' untuk '{mata_pelajaran}' tidak ditemukan."
+                if topic else
+                f"Materi untuk '{mata_pelajaran}' belum tersedia di database."
+            )
+            raise HTTPException(status_code=404, detail=detail)
+
+        # Konten bab yang dipilih, dipotong agar tidak melebihi limit token Groq
+        MAX_CHARS   = 3000
+        nama_bab    = rows[0].get("topic", "Materi")
+        raw_content = rows[0].get("content", "")
+        raw_dipotong = raw_content[:MAX_CHARS]
 
         system_prompt = (
             "Kamu adalah desainer konten pendidikan untuk siswa SMA Indonesia. "
@@ -429,11 +482,11 @@ def get_materi(mata_pelajaran: str):
             "WAJIB: Kembalikan HANYA kode HTML murni — tanpa markdown, tanpa ```html, langsung mulai dari tag HTML pertama."
         )
         user_prompt = (
-            f"Format ulang materi {mata_pelajaran} berikut menjadi HTML estetik:\n\n{raw_text_dipotong}"
+            f"Format ulang materi {mata_pelajaran} — {nama_bab} berikut menjadi HTML estetik:\n\n{raw_dipotong}"
         )
 
         html_hasil = call_groq(system_prompt, user_prompt, model="llama-3.1-8b-instant", max_tokens=800)
-        return {"mata_pelajaran": mata_pelajaran, "html": html_hasil}
+        return {"mata_pelajaran": mata_pelajaran, "topic": nama_bab, "html": html_hasil}
 
     except HTTPException:
         raise
